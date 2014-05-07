@@ -30,14 +30,13 @@ Adafruit_CC3000 cc3000 = Adafruit_CC3000(ADAFRUIT_CC3000_CS, ADAFRUIT_CC3000_IRQ
 DHT dht(DHTPIN, DHTTYPE);
 
 // WLAN parameters
-#define WLAN_SSID       "yourNetwork"
+#define WLAN_SSID       "yourSSID"
 #define WLAN_PASS       "yourPassword"
-// Security can be WLAN_SEC_UNSEC, WLAN_SEC_WEP, WLAN_SEC_WPA or WLAN_SEC_WPA2
 #define WLAN_SECURITY   WLAN_SEC_WPA2
 
 // Xively parameters
-#define WEBSITE  "api.xively.com"
-#define API_key  "yourAPIKey"
+#define WEBSITE  "https://api.xively.com"
+#define API_key  "yourAPIkey"
 #define feedID  "yourFeedID"
 
 uint32_t ip;
@@ -69,15 +68,8 @@ void loop(void)
     delay(100);
   }  
 
-  // Get the website IP & print it
-  ip = 0;
-  Serial.print(WEBSITE); Serial.print(F(" -> "));
-  while (ip == 0) {
-    if (! cc3000.getHostByName(WEBSITE, &ip)) {
-      Serial.println(F("Couldn't resolve!"));
-    }
-    delay(500);
-  }
+  // Set the website IP
+  uint32_t ip = cc3000.IP2U32(216,52,233,120);
   cc3000.printIPdotsRev(ip);
   
   // Get data & transform to integers

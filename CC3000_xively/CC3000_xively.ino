@@ -6,7 +6,6 @@
 
 // Libraries
 #include <Adafruit_CC3000.h>
-#include <ccspi.h>
 #include <SPI.h>
 #include "DHT.h"
 #include <avr/wdt.h>
@@ -33,9 +32,9 @@ DHT dht(DHTPIN, DHTTYPE);
 #define WLAN_SECURITY   WLAN_SEC_WPA2
 
 // Xively parameters
-#define WEBSITE  "api.xively.com"
 #define API_key  "yourAPIKey"
 #define feedID  "yourFeedID"
+int buffer_size = 20;
 
 uint32_t ip;
 
@@ -50,27 +49,38 @@ void setup(void)
     Serial.println(F("Couldn't begin()! Check your wiring?"));
     while(1);
   }
- 
-}
-
-void loop(void)
-{
-  // Connect to WiFi network
-  cc3000.connectToAP(WLAN_SSID, WLAN_PASS, WLAN_SECURITY);
-  Serial.println(F("Connected to WiFi network!"));
   
-  /* Wait for DHCP to complete */
+  // Connect to WiFi network
+  Serial.print(F("Connecting to WiFi network ..."));
+  cc3000.connectToAP(WLAN_SSID, WLAN_PASS, WLAN_SECURITY);
+  Serial.println(F("done!"));
+  
+  // Wait for DHCP to complete
   Serial.println(F("Request DHCP"));
   while (!cc3000.checkDHCP())
   {
     delay(100);
   }
-  
-  // Start watchdog 
-  wdt_enable(WDTO_8S);  
+ 
+}
 
-  // Set the website IP
-  uint32_t ip = cc3000.IP2U32(216,52,233,120);
+void loop(void)
+{
+  // Start watchdog 
+  wdt_enable(WDTO_8S); 
+  
+  // Get IP
+  uint32_t ip = 0;
+  Serial.print(F("api.xively.com -> "));
+  while  (ip  ==  0)  {
+    if  (!  cc3000.getHostByName("api.xively.com", &ip))  {
+      Serial.println(F("Couldn't resolve!"));
+      while(1){}
+    }
+    delay(500);
+  }  
+  cc3000.printIPdotsRev(ip);
+  Serial.println(F(""));
   
   // Get data & transform to integers
   float h = dht.readHumidity();
@@ -78,31 +88,41 @@ void loop(void)
   
   int temperature = (int) t;
   int humidity = (int) h;
-  
+
   // Prepare JSON for Xively & get length
   int length = 0;
 
-  // JSON beginning
-  String data_start = "";
-  data_start = data_start + "\n" + "{\"version\":\"1.0.0\",\"datastreams\" : [ ";
-  
-  // JSON for temperature & humidity
-  String data_temperature = "{\"id\" : \"Temperature\",\"current_value\" : \"" + String(temperature) + "\"},";
-  String data_humidity = "{\"id\" : \"Humidity\",\"current_value\" : \"" + String(humidity) + "\"}]}";
+  // JSON data
+  String data = "";
+  data = data + "\n" + "{\"version\":\"1.0.0\",\"datastreams\" : [ "
+  + "{\"id\" : \"Temperature\",\"current_value\" : \"" + String(temperature) + "\"},"
+  + "{\"id\" : \"Humidity\",\"current_value\" : \"" + String(humidity) + "\"}]}";
   
   // Get length
-  length = data_start.length() + data_temperature.length() + data_humidity.length();
+  length = data.length();
  
   // Reset watchdog
   wdt_reset();
- 
+  
+  // Check connection to WiFi
+  Serial.print(F("Checking WiFi connection ..."));
+  if(!cc3000.checkConnected()){while(1){}}
+  Serial.println(F("done."));
+  wdt_reset();
+  
+  // Ping Xively server
+   Serial.print(F("Pinging Xively server ..."));
+  if(!cc3000.ping(ip, 2)){while(1){}}
+  Serial.println(F("done."));
+  wdt_reset();
+  
   // Send request
   Adafruit_CC3000_Client client = cc3000.connectTCP(ip, 80);
   if (client.connected()) {
     Serial.println(F("Connected to Xively server."));
     
     // Send headers
-    Serial.print(F("Sending headers"));
+    Serial.print(F("Sending headers "));
     client.fastrprint(F("PUT /v2/feeds/"));
     client.fastrprint(feedID);
     client.fastrprintln(F(".json HTTP/1.0"));
@@ -117,23 +137,15 @@ void loop(void)
     Serial.print(F("."));
     client.fastrprint(F("Connection: close"));
     Serial.println(F(" done."));
-    
     // Reset watchdog
     wdt_reset();
     
     // Send data
-    Serial.print(F("Sending data"));
+    Serial.print(F("Sending data ..."));
     client.fastrprintln(F(""));    
-    client.print(data_start);
-    Serial.print(F("."));
-    wdt_reset();
-    client.print(data_temperature);
-    Serial.print(F("."));
-    wdt_reset();
-    client.print(data_humidity);
-    Serial.print(F("."));  
+    sendData(client,data,buffer_size);  
     client.fastrprintln(F(""));
-    Serial.println(F(" done."));
+    Serial.println(F("done."));
     
     // Reset watchdog
     wdt_reset();
@@ -146,7 +158,7 @@ void loop(void)
   // Reset watchdog
   wdt_reset();
   
-  Serial.println(F("Reading answer..."));
+  Serial.println(F("Reading answer ..."));
   while (client.connected()) {
     while (client.available()) {
       char c = client.read();
@@ -159,15 +171,38 @@ void loop(void)
    
   // Close connection and disconnect
   client.close();
-  Serial.println(F("Disconnecting"));
-  Serial.println(F(""));
-  cc3000.disconnect();
+  Serial.println(F("Closing connection"));
   
   // Reset watchdog & disable
   wdt_reset();
   wdt_disable();
   
   // Wait 10 seconds until next update
-  delay(10000);
+  wait(10000);
   
+}
+
+// Send data chunk by chunk
+void sendData(Adafruit_CC3000_Client& client, String input, int chunkSize) {
+  
+  // Get String length
+  int length = input.length();
+  int max_iteration = (int)(length/chunkSize);
+  
+  for (int i = 0; i < length; i++) {
+    client.print(input.substring(i*chunkSize, (i+1)*chunkSize));
+    wdt_reset();
+  }  
+}
+
+// Wait for a given time using the watchdog
+void wait(int total_delay) {
+  
+  int number_steps = (int)(total_delay/5000);
+  wdt_enable(WDTO_8S);
+  for (int i = 0; i < number_steps; i++){
+    delay(5000);
+    wdt_reset();
+  }
+  wdt_disable();
 }
